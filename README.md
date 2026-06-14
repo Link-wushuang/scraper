@@ -58,7 +58,7 @@ python main.py --platform xhs --profile --park 公园A
 python xiaohongshu_scraper.py --profile
 ```
 
-### 只跑大众点评
+### 只跑大众点评（大众不行，需要app端）
 
 ```bash
 python main.py --platform dianping --park 公园A
@@ -81,7 +81,8 @@ dianping_scraper.scrape_park(..., use_open_page=False)
 
 ```bash
 python main.py --platform ctrip --park 公园A
-python main.py --platform meituan --park 公园A
+完整（python main.py --platform ctrip --profile）
+python main.py --platform meituan --park 公园A（还没做）
 ```
 
 ### 全平台运行
