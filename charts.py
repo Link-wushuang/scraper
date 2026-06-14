@@ -249,6 +249,120 @@ def plot_scatter(
 
 
 # ─────────────────────────────────────────────────────────
+# 4. 多平台均值柱状图 + 散点图
+# ─────────────────────────────────────────────────────────
+
+def plot_platform_avg_bar(
+    platform_scores: dict[str, pd.DataFrame],
+    output_dir: str = "output",
+    filename: str = "a4_a5_platform_avg_bar.png",
+):
+    """
+    各平台分数取均值后画柱状图。
+    platform_scores: {"携程": scores_df, "小红书": scores_df, ...}
+    """
+    _set_mpl_font()
+    os.makedirs(output_dir, exist_ok=True)
+
+    all_parks = set()
+    for sc in platform_scores.values():
+        all_parks.update(sc.index.tolist())
+    parks = sorted(all_parks)
+
+    a4_avg, a5_avg = [], []
+    for p in parks:
+        a4_vals = [sc.loc[p, "a4_score"] for sc in platform_scores.values() if p in sc.index]
+        a5_vals = [sc.loc[p, "a5_score"] for sc in platform_scores.values() if p in sc.index]
+        a4_avg.append(sum(a4_vals) / len(a4_vals) if a4_vals else 0)
+        a5_avg.append(sum(a5_vals) / len(a5_vals) if a5_vals else 0)
+
+    x = range(len(parks))
+    width = 0.35
+    plat_names = "、".join(platform_scores.keys())
+
+    fig, ax = plt.subplots(figsize=(max(8, len(parks) * 1.5), 5))
+    bars1 = ax.bar([i - width/2 for i in x], a4_avg, width,
+                   label="A4 传播扩散度", color="#4472C4", alpha=0.85)
+    bars2 = ax.bar([i + width/2 for i in x], a5_avg, width,
+                   label="A5 文化传播关联度", color="#ED7D31", alpha=0.85)
+
+    for bar in bars1 + bars2:
+        h = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, h + 0.5,
+                f"{h:.1f}", ha="center", va="bottom", fontsize=9)
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(parks, fontsize=10)
+    ax.set_ylim(0, 115)
+    ax.set_ylabel("得分 (0~100)")
+    ax.set_title(f"各公园 A4 / A5 指标对比（{plat_names}平均）")
+    ax.legend()
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    plt.tight_layout()
+
+    path = os.path.join(output_dir, filename)
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"  [图表] 平台均值柱状图已保存: {path}")
+    return path
+
+
+def plot_platform_avg_scatter(
+    platform_scores: dict[str, pd.DataFrame],
+    output_dir: str = "output",
+    filename: str = "a4_a5_platform_avg_scatter.png",
+):
+    """
+    各平台分数取均值后画散点图。
+    """
+    _set_mpl_font()
+    os.makedirs(output_dir, exist_ok=True)
+
+    all_parks = set()
+    for sc in platform_scores.values():
+        all_parks.update(sc.index.tolist())
+    parks = sorted(all_parks)
+
+    a4_avg, a5_avg = [], []
+    for p in parks:
+        a4_vals = [sc.loc[p, "a4_score"] for sc in platform_scores.values() if p in sc.index]
+        a5_vals = [sc.loc[p, "a5_score"] for sc in platform_scores.values() if p in sc.index]
+        a4_avg.append(sum(a4_vals) / len(a4_vals) if a4_vals else 0)
+        a5_avg.append(sum(a5_vals) / len(a5_vals) if a5_vals else 0)
+
+    plat_names = "、".join(platform_scores.keys())
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.scatter(a4_avg, a5_avg, s=120, color="#5B9BD5", zorder=3)
+
+    for i, name in enumerate(parks):
+        ax.annotate(name, (a4_avg[i], a5_avg[i]),
+                    textcoords="offset points", xytext=(8, 5), fontsize=9)
+
+    ax.axvline(50, color="gray", linestyle="--", linewidth=0.8, alpha=0.7)
+    ax.axhline(50, color="gray", linestyle="--", linewidth=0.8, alpha=0.7)
+    ax.text(5,  95, "低传播·高文化", fontsize=8, color="gray", alpha=0.7)
+    ax.text(75, 95, "高传播·高文化", fontsize=8, color="#70AD47", alpha=0.9,
+            fontweight="bold")
+    ax.text(5,  3,  "低传播·低文化", fontsize=8, color="gray", alpha=0.7)
+    ax.text(75, 3,  "高传播·低文化", fontsize=8, color="gray", alpha=0.7)
+
+    ax.set_xlim(0, 105)
+    ax.set_ylim(0, 105)
+    ax.set_xlabel("A4 传播扩散度", fontsize=11)
+    ax.set_ylabel("A5 文化传播关联度", fontsize=11)
+    ax.set_title(f"公园文化传播象限分析（{plat_names}平均）", fontsize=13)
+    ax.grid(True, linestyle="--", alpha=0.3)
+    plt.tight_layout()
+
+    path = os.path.join(output_dir, filename)
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"  [图表] 平台均值散点图已保存: {path}")
+    return path
+
+
+# ─────────────────────────────────────────────────────────
 # 测试
 # ─────────────────────────────────────────────────────────
 if __name__ == "__main__":

@@ -286,7 +286,8 @@ def main():
     print("开始内容分类（用于 A5）...")
     from classifier import classify_dataframe
     from calculator import calculate_scores, print_scores
-    from charts import generate_all_wordclouds, plot_bar_comparison, plot_scatter
+    from charts import (generate_all_wordclouds, plot_bar_comparison, plot_scatter,
+                        plot_platform_avg_bar, plot_platform_avg_scatter)
 
     park_data_classified: dict[str, pd.DataFrame] = {}
     for park_key, df in park_data_display.items():
@@ -306,6 +307,7 @@ def main():
     print("生成可视化图表...")
 
     _PLAT_FOLDERS = {"携程": "ctrip", "大众点评": "dianping", "美团": "meituan", "小红书": "xhs"}
+    all_plat_scores = {}
     for plat_label, plat_folder in _PLAT_FOLDERS.items():
         plat_data = {}
         for park_name, df in park_data_classified.items():
@@ -321,6 +323,14 @@ def main():
             plat_scores = calculate_scores(plat_data)
             plot_bar_comparison(plat_scores, output_dir=plat_dir)
             plot_scatter(plat_scores, output_dir=plat_dir)
+            all_plat_scores[plat_label] = plat_scores
+
+    # 平台均值图表
+    if len(all_plat_scores) >= 2:
+        avg_dir = os.path.join(OUTPUT_DIR, "platform_avg")
+        print(f"\n  [平台均值] 图表 -> {avg_dir}/")
+        plot_platform_avg_bar(all_plat_scores, output_dir=avg_dir)
+        plot_platform_avg_scatter(all_plat_scores, output_dir=avg_dir)
 
     # 汇总图表（全平台合并）
     print(f"\n  [汇总] 图表 -> {OUTPUT_DIR}/")
