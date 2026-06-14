@@ -142,14 +142,31 @@ def calculate_scores(
 # ─────────────────────────────────────────────────────────
 
 def print_scores(result: pd.DataFrame):
-    cols = ["post_count", "engagement_total", "a4_score",
-            "culture_count", "culture_ratio_strict", "a5_score"]
-    present = [c for c in cols if c in result.columns]
-    print("\n" + "="*60)
-    print("A4 / A5 分数汇总")
-    print("="*60)
-    print(result[present].to_string())
-    print("="*60)
+    """
+    打印完整评分明细表，包含：
+      A4 子指标原始值 → 标准化分值 → 加权最终得分
+      A5 子指标原始值 → 最终得分
+    """
+    # ── A4 原始值 ──
+    raw_a4 = ["post_count", "engagement_total", "monthly_avg"]
+    # ── A4 标准化分值（0~100）──
+    norm_a4 = ["a4_raw_post", "a4_raw_engagement", "a4_raw_monthly"]
+    # ── A5 原始值 ──
+    raw_a5 = ["culture_count", "non_culture_count", "culture_ratio_strict"]
+    # ── 最终得分 ──
+    finals = ["a4_score", "a5_score"]
+
+    all_cols = [c for c in [*raw_a4, *norm_a4, *raw_a5, *finals] if c in result.columns]
+
+    print("\n" + "="*110)
+    print("A4 / A5 评分明细（含各级子指标原始值与标准化分值）")
+    print("="*110)
+    print(result[all_cols].to_string())
+    print("\n── 公式说明 ──")
+    print("A4 = a4_raw_post×0.40(发帖量) + a4_raw_engagement×0.40(互动量) + a4_raw_monthly×0.20(月均)")
+    print("    其中 a4_raw_xxx = 极差标准化后的得分 (0~100)")
+    print("A5 = culture_ratio_strict × 100  (文化类占非中性内容的百分比)")
+    print("="*110)
 
 
 # ─────────────────────────────────────────────────────────

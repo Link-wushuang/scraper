@@ -163,50 +163,91 @@ def _normalize_ctrip_review(review: dict, sight_id: int | None) -> dict:
     return review
 
 
-async def _click_ctrip_next_page(page) -> bool:
-    try:
-        clicked = await page.evaluate("""
-            () => {
-                const nodes = Array.from(document.querySelectorAll('a, button, li, span'));
-                const target = nodes.find(el => {
-                    const text = (el.innerText || el.textContent || '').trim();
-                    const cls = String(el.className || '');
-                    const disabled = el.disabled || /disabled/.test(cls) || el.getAttribute('aria-disabled') === 'true';
-                    if (disabled) return false;
-                    return text === '下一页' || text === '>' || /next/i.test(cls);
-                });
-                if (!target) return false;
-                target.scrollIntoView({ block: 'center' });
-                target.click();
+async def _scroll_to_review_section(page):
+    """滚动到用户点评栏"""
+    await page.evaluate("""
+        () => {
+            const el = document.querySelector(
+                '[class*="commentModule"], [class*="CommentModule"], ' +
+                '[class*="commentList"], [class*="CommentList"], ' +
+                '[id*="commentModule"], [id*="commentList"], ' +
+                '[class*="comment-module"]'
+            );
+            if (el) {
+                el.scrollIntoView({ block: 'start' });
+            } else {
+                window.scrollTo(0, document.body.scrollHeight * 0.5);
+            }
+        }
+    """)
+    await page.wait_for_timeout(2000)
+    for _ in range(3):
+        await page.evaluate("window.scrollBy(0, 400)")
+        await page.wait_for_timeout(600)
+
+
+_CLICK_NEXT_JS = """
+    () => {
+        const pager = document.querySelector('.ant-pagination, [class*="ant-pagination"]');
+        if (!pager) return false;
+
+        // 方式1：ant-pagination-next 按钮
+        const nextLi = pager.querySelector(
+            '.ant-pagination-next:not(.ant-pagination-disabled)'
+        );
+        if (nextLi) {
+            const btn = nextLi.querySelector('button, a') || nextLi;
+            btn.scrollIntoView({ block: 'center' });
+            btn.click();
+            return true;
+        }
+
+        // 方式2：当前激活页码的下一个兄弟
+        const active = pager.querySelector('.ant-pagination-item-active');
+        if (active && active.nextElementSibling) {
+            const sib = active.nextElementSibling;
+            if (/ant-pagination-item/.test(sib.className)) {
+                const link = sib.querySelector('a') || sib;
+                link.scrollIntoView({ block: 'center' });
+                link.click();
                 return true;
             }
-        """)
-        if clicked:
-            await page.wait_for_timeout(random.randint(1800, 3200))
-            return True
-    except Exception:
-        pass
-    return False
+        }
+        return false;
+    }
+"""
+
+_FIRST_COMMENT_JS = """
+    () => {
+        const el = document.querySelector('[class*="commentItem"]');
+        return el ? el.innerText.slice(0, 80) : '';
+    }
+"""
 
 
-async def _scroll_ctrip_reviews(page):
-    for _ in range(8):
-        await page.evaluate("(d) => window.scrollBy(0, d)", random.randint(500, 900))
-        await page.wait_for_timeout(random.randint(500, 900))
+async def _click_review_next_page(page) -> bool:
+    """点击评论区 Ant Design 分页的下一页按钮，带重试"""
+    before = await page.evaluate(_FIRST_COMMENT_JS)
+
+    for attempt in range(3):
         try:
-            await page.evaluate("""
-                () => {
-                    const nodes = Array.from(document.querySelectorAll('a, button, span'));
-                    for (const el of nodes) {
-                        const text = (el.innerText || el.textContent || '').trim();
-                        if (/展开全部|查看更多|更多/.test(text)) {
-                            try { el.click(); } catch (e) {}
-                        }
-                    }
-                }
-            """)
+            clicked = await page.evaluate(_CLICK_NEXT_JS)
+            if not clicked:
+                if attempt < 2:
+                    await page.wait_for_timeout(1000)
+                    continue
+                return False
+
+            for _ in range(10):
+                await page.wait_for_timeout(500)
+                after = await page.evaluate(_FIRST_COMMENT_JS)
+                if after != before:
+                    return True
+            return True
         except Exception:
-            pass
+            if attempt < 2:
+                await page.wait_for_timeout(1000)
+    return False
 
 
 async def _async_fetch_reviews_from_page(url: str, max_count: int, use_profile: bool = True) -> list[dict]:
@@ -247,24 +288,33 @@ async def _async_fetch_reviews_from_page(url: str, max_count: int, use_profile: 
         except PlaywrightTimeout:
             print("  [Ctrip] page load timeout; try extracting from current DOM")
 
+        # 先滚动到用户点评栏
+        await _scroll_to_review_section(page)
+
         reviews = []
         seen = set()
         empty_pages = 0
+        page_num = 0
         with tqdm(total=max_count, desc=f"  Ctrip page={sight_id or '?'}", unit="item") as pbar:
             while len(reviews) < max_count and empty_pages < 3:
-                await _scroll_ctrip_reviews(page)
+                page_num += 1
                 page_reviews = await page.evaluate(_EXTRACT_PAGE_REVIEWS_JS)
                 added = 0
+                skipped_dup = 0
+                skipped_short = 0
+                skipped_date = 0
 
                 for item in page_reviews:
                     review = _normalize_ctrip_review(item, sight_id)
                     if len(review["content"]) < 3:
+                        skipped_short += 1
                         continue
                     if review["date"] and review["date"] < DATE_START:
-                        empty_pages = 3
-                        break
+                        skipped_date += 1
+                        continue
                     key = (review["content"], review["date"], review["rating"])
                     if key in seen:
+                        skipped_dup += 1
                         continue
                     seen.add(key)
                     reviews.append(review)
@@ -280,7 +330,8 @@ async def _async_fetch_reviews_from_page(url: str, max_count: int, use_profile: 
 
                 if len(reviews) >= max_count or empty_pages >= 3:
                     break
-                if not await _click_ctrip_next_page(page):
+                if not await _click_review_next_page(page):
+                    print(f"\n  [Ctrip] pagination stopped at page {page_num}")
                     break
 
         if browser:
