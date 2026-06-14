@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+# 爬虫产出数据
+data/
+output/
+debug_html/
+test_xhs.csv
+
+# Cookie / 登录凭据
+*_cookies.json
+
+# 环境
+.env
+*.log
