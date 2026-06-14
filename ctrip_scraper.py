@@ -9,12 +9,17 @@
 """
 
 import re
+import os
+import sys
 import time
 import random
+import asyncio
+import subprocess
 import requests
 import pandas as pd
 from tqdm import tqdm
 from datetime import datetime
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from config import DELAY_MIN, DELAY_MAX, MAX_REVIEWS_CTRIP, DATE_START
 from anti_crawl import (
     make_session, random_ua, request_with_retry,
@@ -44,6 +49,246 @@ def _make_session_pc():
         mobile=False,
         referer="https://you.ctrip.com/",
     )
+
+
+def _extract_sight_id_from_url(url: str) -> int | None:
+    if not url or not re.match(r"^https?://([^/]+\.)?ctrip\.com/", url):
+        return None
+    match = re.search(r"/sight/[^/]+/(\d+)\.html", url)
+    return int(match.group(1)) if match else None
+
+
+_EXTRACT_PAGE_REVIEWS_JS = """
+() => {
+    const clean = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+    const skipLine = (line) => {
+        if (!line || line.length < 6) return true;
+        if (/^(全部|最新|有图|好评|差评|中评|综合|排序|点评|写点评|加载|下一页|上一页)$/.test(line)) return true;
+        if (/^\\d+(\\.\\d+)?分$/.test(line)) return true;
+        return false;
+    };
+    const getDate = (text) => {
+        const m = text.match(/(20\\d{2})[-/.年](\\d{1,2})[-/.月](\\d{1,2})/);
+        if (!m) return '';
+        return `${m[1]}-${String(Number(m[2])).padStart(2, '0')}-${String(Number(m[3])).padStart(2, '0')}`;
+    };
+    const getRating = (text, el) => {
+        const textMatch = text.match(/([1-5](?:\\.0)?)\\s*分/);
+        if (textMatch) return Number(textMatch[1]);
+        const cls = String(el.className || '');
+        const classMatch = cls.match(/star[^0-9]*([1-5]0?)/i);
+        if (!classMatch) return 0;
+        const raw = Number(classMatch[1]);
+        return raw > 5 ? raw / 10 : raw;
+    };
+    const getLikes = (text) => {
+        const m = text.match(/(?:有用|赞|点赞)\\D*(\\d+)/);
+        return m ? Number(m[1]) : 0;
+    };
+
+    const selectors = [
+        '[class*="commentItem"]',
+        '[class*="comment-item"]',
+        '[class*="CommentItem"]',
+        '[class*="comment_single"]',
+        '[class*="reviewItem"]',
+        '[class*="review-item"]',
+        'li[class*="comment"]',
+        'div[class*="comment"]'
+    ].join(',');
+    const nodes = Array.from(document.querySelectorAll(selectors));
+    const results = [];
+    const seen = new Set();
+
+    for (const el of nodes) {
+        const raw = clean(el.innerText);
+        if (raw.length < 20 || raw.length > 2500) continue;
+        if (!/(\\d{4}[-/.年]\\d{1,2}[-/.月]\\d{1,2}|分|有用|赞)/.test(raw)) continue;
+
+        const preferred = el.querySelector(
+            '[class*="content"], [class*="Content"], [class*="detail"], ' +
+            '[class*="Detail"], [class*="text"], [class*="Text"], p'
+        );
+        const sourceText = clean((preferred && preferred.innerText) || raw);
+        const lines = sourceText.split(/\\n|。/).map(clean).filter(line => !skipLine(line));
+        let content = lines.find(line => line.length >= 12 && !getDate(line)) || '';
+        if (!content) {
+            const fallback = raw.split(/\\n|。/).map(clean).filter(line => !skipLine(line));
+            content = fallback.find(line => line.length >= 12 && !getDate(line)) || '';
+        }
+        content = clean(content).replace(/展开全部$/, '').trim();
+        if (content.length < 6) continue;
+
+        const key = content + '|' + getDate(raw);
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+            platform: '携程',
+            content,
+            date: getDate(raw),
+            rating: getRating(raw, el),
+            likes: getLikes(raw),
+            images: (raw.match(/图片|照片|图/g) || []).length,
+        });
+    }
+    return results;
+}
+"""
+
+
+def _edge_exe() -> str:
+    candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return "msedge"
+
+
+def _edge_user_data_dir() -> str:
+    return os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data")
+
+
+def _normalize_ctrip_review(review: dict, sight_id: int | None) -> dict:
+    review = dict(review)
+    review["content"] = _clean_text(review.get("content", ""))
+    review["date"] = review.get("date", "")
+    review["rating"] = review.get("rating", 0) or 0
+    review["likes"] = review.get("likes", 0) or 0
+    review["images"] = review.get("images", 0) or 0
+    review["sight_id"] = sight_id or 0
+    return review
+
+
+async def _click_ctrip_next_page(page) -> bool:
+    try:
+        clicked = await page.evaluate("""
+            () => {
+                const nodes = Array.from(document.querySelectorAll('a, button, li, span'));
+                const target = nodes.find(el => {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    const cls = String(el.className || '');
+                    const disabled = el.disabled || /disabled/.test(cls) || el.getAttribute('aria-disabled') === 'true';
+                    if (disabled) return false;
+                    return text === '下一页' || text === '>' || /next/i.test(cls);
+                });
+                if (!target) return false;
+                target.scrollIntoView({ block: 'center' });
+                target.click();
+                return true;
+            }
+        """)
+        if clicked:
+            await page.wait_for_timeout(random.randint(1800, 3200))
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def _scroll_ctrip_reviews(page):
+    for _ in range(8):
+        await page.evaluate("(d) => window.scrollBy(0, d)", random.randint(500, 900))
+        await page.wait_for_timeout(random.randint(500, 900))
+        try:
+            await page.evaluate("""
+                () => {
+                    const nodes = Array.from(document.querySelectorAll('a, button, span'));
+                    for (const el of nodes) {
+                        const text = (el.innerText || el.textContent || '').trim();
+                        if (/展开全部|查看更多|更多/.test(text)) {
+                            try { el.click(); } catch (e) {}
+                        }
+                    }
+                }
+            """)
+        except Exception:
+            pass
+
+
+async def _async_fetch_reviews_from_page(url: str, max_count: int, use_profile: bool = True) -> list[dict]:
+    sight_id = _extract_sight_id_from_url(url)
+    async with async_playwright() as pw:
+        context = None
+        browser = None
+        if use_profile:
+            user_data = _edge_user_data_dir()
+            if not os.path.isdir(user_data):
+                print(f"  [Ctrip] Edge user data dir not found: {user_data}")
+                return []
+            subprocess.run(["taskkill", "/f", "/im", "msedge.exe"], capture_output=True)
+            await asyncio.sleep(2)
+            context = await pw.chromium.launch_persistent_context(
+                user_data_dir=user_data,
+                channel="msedge",
+                headless=False,
+                args=["--profile-directory=Default"],
+                viewport={"width": 1366, "height": 820},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+            )
+            page = context.pages[0] if context.pages else await context.new_page()
+        else:
+            browser = await pw.chromium.launch(channel="msedge", headless=False)
+            context = await browser.new_context(
+                viewport={"width": 1366, "height": 820},
+                user_agent=random_ua(mobile=False),
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+            )
+            page = await context.new_page()
+
+        print(f"  [Ctrip] open: {url}")
+        try:
+            await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        except PlaywrightTimeout:
+            print("  [Ctrip] page load timeout; try extracting from current DOM")
+
+        reviews = []
+        seen = set()
+        empty_pages = 0
+        with tqdm(total=max_count, desc=f"  Ctrip page={sight_id or '?'}", unit="item") as pbar:
+            while len(reviews) < max_count and empty_pages < 3:
+                await _scroll_ctrip_reviews(page)
+                page_reviews = await page.evaluate(_EXTRACT_PAGE_REVIEWS_JS)
+                added = 0
+
+                for item in page_reviews:
+                    review = _normalize_ctrip_review(item, sight_id)
+                    if len(review["content"]) < 3:
+                        continue
+                    if review["date"] and review["date"] < DATE_START:
+                        empty_pages = 3
+                        break
+                    key = (review["content"], review["date"], review["rating"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    reviews.append(review)
+                    added += 1
+                    pbar.update(1)
+                    if len(reviews) >= max_count:
+                        break
+
+                if added == 0:
+                    empty_pages += 1
+                else:
+                    empty_pages = 0
+
+                if len(reviews) >= max_count or empty_pages >= 3:
+                    break
+                if not await _click_ctrip_next_page(page):
+                    break
+
+        if browser:
+            await browser.close()
+        else:
+            await context.close()
+
+    return reviews
 
 
 # ─────────────────────────────────────────────────────────
@@ -214,18 +459,44 @@ def fetch_reviews(sight_id: int, max_count: int = MAX_REVIEWS_CTRIP, session=Non
 # 第三步：一站式爬取（搜索 + 评论）
 # ─────────────────────────────────────────────────────────
 
-def scrape_park(park_name: str, keywords: list[str], sight_id: int = None, ctrip_sight_id: int = None) -> pd.DataFrame:
+def scrape_park(
+    park_name: str,
+    keywords: list[str],
+    sight_id: int = None,
+    ctrip_sight_id: int = None,
+    ctrip_url: str = None,
+    use_profile: bool | None = None,
+) -> pd.DataFrame:
     """
     对某公园执行完整爬取流程：
       1. 若未提供 sight_id，先搜索获取
       2. 抓评论
       3. 返回 DataFrame
     """
+    if use_profile is None:
+        use_profile = "--profile" in sys.argv
+
+    if ctrip_url and use_profile:
+        raw = asyncio.run(_async_fetch_reviews_from_page(
+            ctrip_url,
+            MAX_REVIEWS_CTRIP,
+            use_profile=True,
+        ))
+        if not raw:
+            print(f"  [鎼虹▼] {park_name} 娌℃湁璇勮鏁版嵁")
+            return pd.DataFrame()
+
+        df = pd.DataFrame(raw)
+        df["park"] = park_name
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        print(f"  [Ctrip] {park_name}: fetched {len(df)} reviews")
+        return df
+
     session = _make_session_mobile()
     print(f"\n[携程] 开始爬取: {park_name}")
 
     if sight_id is None:
-        sight_id = find_sight_id(keywords)
+        sight_id = ctrip_sight_id or _extract_sight_id_from_url(ctrip_url or "") or find_sight_id(keywords)
 
     if sight_id is None:
         print(f"  [携程] {park_name} 找不到景区，跳过")

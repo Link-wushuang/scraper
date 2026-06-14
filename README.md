@@ -23,6 +23,25 @@ playwright install chromium
 现在建议按平台单独跑，尤其是小红书和大众点评这类需要打开浏览器页面的爬虫。不要默认一次跑全部平台，否则一个浏览器页面很难同时配合多个平台的交互式抓取。
 记得先用Edge浏览器登录好你要爬的平台。
 
+### 只跑携程
+
+携程现在按 `config.py` 里的固定景点网址抓取。登录 Edge 后推荐用 profile 模式：
+
+```bash
+python main.py --platform ctrip --profile --park 公园A
+```
+
+已配置的携程网址：
+
+- 公园A 北海公园：https://you.ctrip.com/sight/beijing1/232.html?renderPlatform=
+- 公园B 天坛公园：https://you.ctrip.com/sight/beijing1/233.html?renderPlatform=
+- 公园C 颐和园：https://you.ctrip.com/sight/beijing1/231.html?renderPlatform=
+- 公园D 朝阳公园：https://you.ctrip.com/sight/beijing1/107621.html?renderPlatform=
+- 公园E 奥林匹克森林公园：https://you.ctrip.com/sight/beijing1/69342270.html?renderPlatform=#ctm_ref=www_hp_bs_lst
+- 公园F 树村公园：https://you.ctrip.com/sight/beijing1/1483951.html?renderPlatform=
+
+这个模式会打开景点页，向下滚动到用户评论区，提取当前页评论，并尝试点击“下一页”继续抓取。
+
 ### 只跑小红书
 
 你已经验证过的模式，可以从 `main.py` 入口这样跑：

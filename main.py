@@ -61,7 +61,11 @@ def scrape_park(park_key: str, park_cfg: dict, skip_xhs: bool = False) -> pd.Dat
     # ── 携程 ──
     try:
         ct_sight_id = park_cfg.get("ctrip_sight_id") or None
-        df_ct = ctrip_scraper.scrape_park(park_key, keywords, sight_id=ct_sight_id)
+        df_ct = ctrip_scraper.scrape_park(
+            park_key, keywords,
+            sight_id=ct_sight_id,
+            ctrip_url=park_cfg.get("ctrip_url") or None,
+        )
         if not df_ct.empty:
             frames.append(df_ct)
             _save_raw(df_ct, park_key, "ctrip")
@@ -185,7 +189,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--platform", choices=("all", *PLATFORMS), default="all",
                         help="crawl one platform, or all platforms by default")
     parser.add_argument("--profile", action="store_true",
-                        help="accepted for xhs profile mode; xiaohongshu_scraper reads it from sys.argv")
+                        help="use Edge profile mode for xhs or ctrip")
     return parser
 
 
@@ -196,6 +200,7 @@ def _scrape_single_platform(park_key: str, park_cfg: dict, platform: str) -> pd.
         df = ctrip_scraper.scrape_park(
             park_key, keywords,
             sight_id=park_cfg.get("ctrip_sight_id") or None,
+            ctrip_url=park_cfg.get("ctrip_url") or None,
         )
     elif platform == "dianping":
         df = dianping_scraper.scrape_park(
@@ -230,7 +235,7 @@ def main():
     parser.add_argument("--platform", choices=("all", *PLATFORMS), default="all",
                         help="crawl one platform, or all platforms by default")
     parser.add_argument("--profile", action="store_true",
-                        help="accepted for xhs profile mode")
+                        help="use Edge profile mode for xhs or ctrip")
     args = parser.parse_args()
 
     _init_dirs()
