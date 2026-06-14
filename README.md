@@ -5,6 +5,8 @@
 ## 环境准备
 
 ```bash
+conda create --name scraper python=3.10
+conda activate scraper
 pip install -r requirements.txt
 playwright install chromium
 ```
