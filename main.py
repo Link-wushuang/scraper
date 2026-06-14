@@ -138,6 +138,8 @@ def load_existing_data(park_key: str) -> pd.DataFrame:
         return pd.DataFrame()
     frames = [pd.read_csv(f, encoding="utf-8-sig") for f in files]
     combined = pd.concat(frames, ignore_index=True)
+    if "date" in combined.columns:
+        combined["date"] = pd.to_datetime(combined["date"], errors="coerce")
     print(f"  [本地] {park_key} 读取 {len(files)} 个文件，共 {len(combined)} 条")
     return combined
 
@@ -145,6 +147,17 @@ def load_existing_data(park_key: str) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────
 # 导出 Excel
 # ─────────────────────────────────────────────────────────
+
+def _with_display_names(
+    park_data: dict[str, pd.DataFrame],
+    park_configs: dict[str, dict],
+) -> dict[str, pd.DataFrame]:
+    """Use config.py park names for charts, score tables, and Excel sheets."""
+    return {
+        park_configs.get(park_key, {}).get("name", park_key): df
+        for park_key, df in park_data.items()
+    }
+
 
 def export_excel(park_data: dict[str, pd.DataFrame], scores: pd.DataFrame):
     """
@@ -266,6 +279,8 @@ def main():
                 df = _scrape_single_platform(park_key, park_cfg, args.platform)
         park_data_raw[park_key] = df
 
+    park_data_display = _with_display_names(park_data_raw, target_parks)
+
     # ── 关键词分类（A5 准备）──
     print(f"\n{'='*60}")
     print("开始内容分类（用于 A5）...")
@@ -274,7 +289,7 @@ def main():
     from charts import generate_all_wordclouds, plot_bar_comparison, plot_scatter
 
     park_data_classified: dict[str, pd.DataFrame] = {}
-    for park_key, df in park_data_raw.items():
+    for park_key, df in park_data_display.items():
         if df.empty:
             park_data_classified[park_key] = df
         else:
@@ -286,9 +301,29 @@ def main():
     scores = calculate_scores(park_data_classified)
     print_scores(scores)
 
-    # ── 可视化 ──
+    # ── 可视化（按平台分文件夹）──
     print(f"\n{'='*60}")
     print("生成可视化图表...")
+
+    _PLAT_FOLDERS = {"携程": "ctrip", "大众点评": "dianping", "美团": "meituan", "小红书": "xhs"}
+    for plat_label, plat_folder in _PLAT_FOLDERS.items():
+        plat_data = {}
+        for park_name, df in park_data_classified.items():
+            if df.empty or "platform" not in df.columns:
+                continue
+            subset = df[df["platform"] == plat_label]
+            if not subset.empty:
+                plat_data[park_name] = subset
+        if plat_data:
+            plat_dir = os.path.join(OUTPUT_DIR, plat_folder)
+            print(f"\n  [{plat_label}] 图表 -> {plat_dir}/")
+            generate_all_wordclouds(plat_data, output_dir=plat_dir)
+            plat_scores = calculate_scores(plat_data)
+            plot_bar_comparison(plat_scores, output_dir=plat_dir)
+            plot_scatter(plat_scores, output_dir=plat_dir)
+
+    # 汇总图表（全平台合并）
+    print(f"\n  [汇总] 图表 -> {OUTPUT_DIR}/")
     generate_all_wordclouds(park_data_classified, output_dir=OUTPUT_DIR)
     plot_bar_comparison(scores, output_dir=OUTPUT_DIR)
     plot_scatter(scores, output_dir=OUTPUT_DIR)
